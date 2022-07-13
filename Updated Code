@@ -1,0 +1,985 @@
+#!/usr/bin/env python3
+# -*- coding: utf-8 -*-
+"""
+Created on Thu Jun 23 16:04:02 2022
+
+@author: johnsalvaris
+"""
+
+# %% Import Packages
+
+import pandas as pd
+import numpy as np
+import sklearn.preprocessing as skp
+import sklearn.metrics as skm
+import matplotlib.pyplot as plt
+import torch
+import time
+import fpdf
+from matplotlib.backends.backend_pdf import PdfPages
+import datetime as dt
+import PyPDF2
+import tensorflow as tf
+from keras.models import Sequential
+from keras.layers import Dense
+from keras.layers import LSTM
+
+import torchmetrics
+
+# %%
+
+class LSTM_nn(torch.nn.Module):
+    def __init__(self, num_classes, input_size, hidden_size, num_layers, seq_length):
+        super(LSTM_nn, self).__init__()
+        self.num_classes = num_classes # number of output neurons
+        self.num_layers = num_layers # number of stacked lstm layers
+        self.input_size = input_size # number of input features
+        self.hidden_size = hidden_size # number of output neurons from lstm (neurons in subsequent layer)
+        self.seq_length = seq_length # sequence length (number of lags)
+
+
+        self.fc_input_layer = torch.nn.Linear(input_size, input_size)
+        
+        self.hidden_lstm_layer = torch.nn.LSTM(input_size=input_size, hidden_size=hidden_size, 
+                                               num_layers=num_layers, dropout=1, batch_first=True)
+        self.fc_output_layer =  torch.nn.Linear(hidden_size, num_classes) 
+
+        self.relu = torch.nn.ReLU()
+    
+    def forward(self, x):
+        h_0 = torch.autograd.Variable(torch.zeros(self.num_layers, x.size(0), 
+                                                  self.hidden_size)) # hidden state
+        c_0 = torch.autograd.Variable(torch.zeros(self.num_layers, x.size(0), 
+                                                  self.hidden_size)) # cell state
+        # Propagate input through LSTM
+        input_layer_out = self.fc_input_layer(x)
+        lstm_out, (hn, cn) = self.hidden_lstm_layer(input_layer_out, (h_0, c_0)) 
+        # lstm_out = lstm_out.view(-1, self.hidden_size)
+
+        hn = hn.view(-1, self.hidden_size) # reshaping the data for Dense layer next
+        #should this be taking the lstm_out instead?
+        
+        ######## NEED TOC CHECK WHICH IS RIGHT!!!!
+        output_layer_out = self.fc_output_layer(hn)
+        # output_layer_out = self.fc_output_layer(lstm_out[:,-1,:])
+        #########
+        
+        
+        # Should this relu activation be performed?
+        # output_layer_out = self.relu(output_layer_out) 
+
+        return output_layer_out
+    
+# num_classes = number of outputs --> 1 (1 result)
+
+
+# %% Metrics
+
+def rmse(actual, estimated):
+    return np.sqrt(np.sum((actual-estimated)**2)/len(actual))
+
+def calculate_r_squared(actual, predicted):
+    # r_squared = torchmetrics.R2Score()
+    r_squared = skm.r2_score(actual, predicted)
+    return r_squared
+
+# %%
+def my_path(subfolders, file_name):
+    main_folder = '/Users/johnsalvaris/OneDrive - UNSW/Thesis-John’s MacBook Pro 2020/'
+    return main_folder + subfolders + file_name
+
+def check_chronological(array):
+    for i in range(1,len(array)):
+        if array[i]<=array[i-1]:
+            return 'Error'
+    return 'No Error'
+
+def check_missing_days(array):
+    missing_days = []
+    for i in range(1,len(array)):
+        if array[i]-array[i-1] != 86400000000000:
+            date_range = [array[i-1], array[i]]
+            num_days = (array[i-1] - array[i])/86400000000000
+            missing_days.append([date_range, num_days])
+            #index of days to fill in
+            
+    if len(missing_days) > 0:
+        print(missing_days)
+        return 'Error'
+    else:
+        return 'No Error'
+
+
+
+def array_of_commons(target_array, search_array,
+                     intermediate_array='target_array'):
+    # target_array = the array final values are selected from. (gets shorter)
+    # search array = the reference array with values/positions determining 
+    #                selections
+    # intermediate_array = array of values which are also in the search array
+    #                      but not wanted to be selected e.g. date
+    if intermediate_array == 'target_array':
+        intermediate_array = target_array
+    
+    smaller_target_array = np.array([target_array[intermediate_array==i][0] 
+                                     for i in search_array])
+    return smaller_target_array
+
+
+def split_set(train_pc, full_data):
+    div = int(np.floor(train_pc * full_data.shape[0]))
+    train_set = full_data[:div]
+    test_set = full_data[div:]
+    return train_set, test_set
+
+
+def get_bore_data(bore_id):
+    subfolders = 'Spreadsheet Data/' + bore_id + '/'
+    bore_file = 'Bore Detailed.csv'    
+    bore_path = my_path(subfolders, bore_file)
+    bore_df = pd.read_csv(bore_path)
+    
+    latitude = bore_df['Latitude'].to_numpy()
+    longitude = bore_df['Longitude'].to_numpy()
+    
+    return latitude[0], longitude[0]
+
+def get_gwl_data(bore_id):
+    subfolders = 'Spreadsheet Data/' + bore_id + '/'
+    gwl_file = 'Water Level.csv'    
+    gwl_path = my_path(subfolders, gwl_file)
+
+    gwl_df = pd.read_csv(gwl_path, parse_dates=['Date'])
+    gwl_df = gwl_df[gwl_df['Variable'] == 'SWL'] # Only use standing water level measurments
+    gwl_df = gwl_df.sort_values(by='Date',ascending=True)
+    
+    gwl_dates = gwl_df['Date'].to_numpy()
+    swl = gwl_df['Result (m)'].to_numpy()
+    swl = swl.reshape(swl.shape[0],1)
+    
+    return gwl_dates, swl
+
+
+def get_silo_data(gwl_dates, bore_id, silo_variables):
+    # silo_variables = list of s input varibles from SILO
+    subfolders = 'Spreadsheet Data/' + bore_id + '/'
+    silo_file = 'SILO.csv'
+    silo_path = my_path(subfolders, silo_file)
+    
+    silo_df = pd.read_csv(silo_path, parse_dates=['YYYY-MM-DD'])
+    silo_df = silo_df.sort_values(by='YYYY-MM-DD', ascending=True)
+    
+    silo_dates = silo_df['YYYY-MM-DD'].to_numpy()
+    
+    
+    for var in silo_variables:
+        vars()[var] = silo_df[var].to_numpy()
+        vars()[var] = array_of_commons(vars()[var], gwl_dates, silo_dates)
+        vars()[var] = vars()[var].reshape((vars()[var].shape[0],1))
+        if silo_variables.index(var) == 0:
+            all_vars = vars()[var]
+        else:
+            all_vars = np.concatenate([all_vars,vars()[var]],axis=1)
+    
+    if len(silo_variables)==0:
+        all_vars = np.array([])
+    
+    silo_dates = array_of_commons(silo_dates, gwl_dates)
+    
+    latitude = silo_df['latitude'].to_numpy()
+    latitude = latitude[0]
+    longitude = silo_df['longitude'].to_numpy()
+    longitude = longitude[0]
+    
+    return silo_dates, all_vars, latitude, longitude
+
+
+def scale_data(swl, all_vars):
+    only_swl = 0
+    
+    scaler_X = skp.MinMaxScaler()
+    scaler_Y = skp.MinMaxScaler()
+    
+    if len(all_vars) == 0:
+        all_vars = swl
+        only_swl = 1
+
+    swl_scaled_train = scaler_Y.fit_transform(swl)
+    all_vars_scaled_train = scaler_X.fit_transform(all_vars)
+
+    all_data_scaled_train = np.concatenate([swl_scaled_train, 
+                                            all_vars_scaled_train], axis=1)
+    
+    swl_scaled_test = scaler_Y.transform(swl)
+    all_vars_scaled_test = scaler_X.transform(all_vars)
+
+    all_data_scaled_test = np.concatenate([swl_scaled_test, 
+                                           all_vars_scaled_test], axis=1)
+    
+    if only_swl == 1:
+        all_data_scaled_train = all_data_scaled_train[:, 0:1]
+        all_data_scaled_test = all_data_scaled_test[:, 0:1]
+    
+    return scaler_X, scaler_Y, swl_scaled_train, swl_scaled_test, \
+           all_data_scaled_train, all_data_scaled_test
+           
+def position_data(n_lags, n_leads, all_data_scaled, swl_scaled):
+    
+    for i in range(n_lags-1,len(all_data_scaled)):
+        if i == n_lags-1:
+            inputs = np.array(all_data_scaled[i-n_lags+1:i+1])
+        else:
+            inputs = np.concatenate([inputs, all_data_scaled[i-n_lags+1:i+1]],
+                                    axis=0)
+    
+    if inputs.ndim == 1:
+        inputs = inputs.reshape((inputs.shape[0],1))
+        
+    inputs = inputs.reshape((int(inputs.shape[0]/n_lags), n_lags,
+                             inputs.shape[1]))
+    inputs = inputs[:-n_leads]
+
+    outputs = swl_scaled[n_lags+n_leads-1:]
+    
+    if str(inputs[0][0][0].dtype)=='datetime64[ns]':
+        X_tensors = inputs
+        y_tensors = outputs
+    else:
+        X_tensors = torch.autograd.Variable(torch.Tensor(inputs))
+        y_tensors = torch.autograd.Variable(torch.Tensor(outputs))
+
+    return X_tensors, y_tensors
+
+def data_date_ref(gwl_dates, n_lags, n_leads):
+    all_dates = gwl_dates.reshape(len(gwl_dates),1)
+    X_dates, y_dates = position_data(n_lags, n_leads, all_dates, all_dates)
+    return X_dates, y_dates
+
+
+def train_test_sets(X_tensors, y_tensors, train_split):
+    X_train, X_test = split_set(train_split, X_tensors)
+    y_train, y_test = split_set(train_split, y_tensors)
+    return X_train, X_test, y_train, y_test
+
+def train_model(X_train, y_train, num_classes, input_size, hidden_size, num_layers, 
+                n_lags, num_epochs, learning_rate):
+
+    lstm_model = LSTM_nn(num_classes, input_size, hidden_size, num_layers, n_lags) 
+
+    
+    criterion = torch.nn.MSELoss()    # mean-squared error for regression
+    optimizer = torch.optim.Adam(lstm_model.parameters(), lr=learning_rate) 
+    
+    lstm_model.train()
+    history = []
+    
+    for epoch in range(num_epochs):
+        outputs = lstm_model.forward(X_train) #forward pass
+        optimizer.zero_grad() #caluclate the gradient, manually setting to 0
+     
+        # obtain the loss function
+        loss = criterion(outputs, y_train)
+         
+        loss.backward() #calculates the loss of the loss function
+         
+        optimizer.step() #improve from loss, i.e backprop
+        
+        if epoch % 100 == 0:
+            history.append("Epoch: %d, Loss: %1.5f" % (epoch, loss.item()))
+            print(str(np.round(epoch/num_epochs*100, 0))+ "% trained")
+        elif epoch == num_epochs -1:
+            # history.append("Epoch: %d, loss: %1.5f" % (epoch, loss.item()))
+            print("100% trained")
+        final_loss = loss.item()
+        
+    return lstm_model, history, final_loss
+
+#<><><>
+
+def train_keras_model(X_train, y_train, num_epochs, learning_rate):
+    
+    X_train = X_train.numpy()
+    y_train = y_train.numpy()
+    
+    keras_lstm_model = Sequential()
+    
+    keras_lstm_model.add(LSTM(64, input_shape=(X_train.shape[1], X_train.shape[2]), 
+                              activation='relu'))
+    keras_lstm_model.add(Dense(8, activation='relu' ))
+    keras_lstm_model.add(Dense(1, activation='linear'))
+    keras_lstm_model.compile(loss='mse', optimizer=tf.keras.optimizers.Adam(learning_rate=learning_rate), 
+                             metrics=[tf.keras.metrics.RootMeanSquaredError()])
+                            # use loss = 'mae'    ???
+    
+    keras_history = keras_lstm_model.fit(X_train, y_train, epochs=num_epochs, 
+                                         validation_split=0.25, verbose=1, shuffle=False)
+
+    ev_loss, ev_rmse = keras_lstm_model.evaluate(X_train, y_train, verbose=1)
+    #history.history['loss'] #label='Train'
+    #history.history['val_loss'] # label='Test'
+            
+    return keras_lstm_model, keras_history, ev_loss, ev_rmse
+
+# <><><>
+
+def used_dates(gwl_dates, silo_dates):
+    gwl_dates_used = gwl_dates[n_lags+n_leads-1:]
+    silo_dates_used = silo_dates[n_lags+n_leads-1:]
+    return gwl_dates_used, silo_dates_used
+
+def make_predictions(X_train, n_lags, n_leads, all_data_scaled_test,
+                     swl_scaled_test, lstm_model, scaler_X, scaler_Y):
+    
+    X_tensors_test, y_tensors_test = position_data(n_lags, n_leads, all_data_scaled_test,
+                                                   swl_scaled_test)
+    
+    lstm_model.eval()
+    predicted_swl = lstm_model(X_tensors_test)#forward pass
+    predicted_swl = predicted_swl.data.numpy() #numpy conversion
+    actual_swl = y_tensors_test.data.numpy()
+
+    predicted_swl = scaler_Y.inverse_transform(predicted_swl) #reverse transformation
+    actual_swl = scaler_Y.inverse_transform(actual_swl)
+    
+    return actual_swl, predicted_swl
+    
+# def plot_all_data(train_dates, test_dates, bore_id, actual_swl, predicted_swl):
+#     all_dates = np.concatenate([train_dates, test_dates])
+        
+#     plt.figure(figsize=(10,6)) #plotting
+#     plt.axvline(x=train_dates[-1], c='r', linestyle='--') #size of the training set
+
+#     plt.plot(all_dates, actual_swl, label='Actual') #actual plot
+#     plt.plot(all_dates, predicted_swl, label='Predicted') #predicted plot
+#     plt.ylabel('SWL (m)')
+#     plt.title(str(bore_id)+': Training and Testing Sets')
+#     plt.legend()
+#     plt.show() 
+    
+#     return
+
+# def plot_testing_only(test_dates, actual_swl, predicted_swl, bore_id):
+    
+#     test_size = len(test_dates)
+#     actual_swl = actual_swl[-test_size:]
+#     predicted_swl = predicted_swl[-test_size:]
+    
+#     plt.figure(figsize=(10,6)) #plotting
+
+#     plt.plot(test_dates, actual_swl, label='Actual') #actual plot
+#     plt.plot(test_dates, predicted_swl, label='Predicted') #predicted plot
+#     plt.ylabel('SWL (m)')
+#     plt.title(str(bore_id)+': Testing Set')
+#     plt.legend()
+#     plt.show() 
+    
+#     return
+
+
+def prediction_plots(train_dates, test_dates, bore_id, actual_swl, predicted_swl, 
+                     date_time_file, predicted_path):
+    
+    predicted_data = PdfPages(predicted_path)
+    
+    all_dates = np.concatenate([train_dates, test_dates])
+    
+    test_size = len(test_dates)
+    actual_swl_test = actual_swl[-test_size:]
+    predicted_swl_test = predicted_swl[-test_size:]
+    
+    
+    figure, axis = plt.subplots(2, 1, figsize=(8.27, 11.69))
+
+    axis[0].axvline(x=train_dates[-1], c='r', linestyle='--') #size of the training set
+    axis[0].plot(all_dates, actual_swl, label='Actual') 
+    axis[0].plot(all_dates, predicted_swl, label='Predicted')
+    axis[0].set_ylabel('SWL (m)')
+    axis[0].set_title(str(bore_id)+': Training and Testing Sets')
+    axis[0].legend()
+    
+    axis[1].plot(test_dates, actual_swl_test, label='Actual') #actual plot
+    axis[1].plot(test_dates, predicted_swl_test, label='Predicted') #predicted plot
+    axis[1].set_ylabel('SWL (m)')
+    axis[1].set_title(str(bore_id)+': Testing Set')
+    axis[1].legend()
+    
+    figure.tight_layout()
+
+    plt.savefig(predicted_data, format='pdf')
+    
+    figure, axis = plt.subplots(2, 1, figsize=(8.27, 11.69))
+
+    axis[0].axvline(x=train_dates[-1], c='r', linestyle='--') #size of the training set
+    axis[0].plot(all_dates, actual_swl, label='Actual') 
+    axis[0].plot(all_dates, predicted_swl, label='Predicted')
+    axis[0].invert_yaxis()
+    axis[0].set_ylabel('Inverted SWL (m)')
+    axis[0].set_title(str(bore_id)+': Training and Testing Sets')
+    axis[0].legend()
+    
+    axis[1].plot(test_dates, actual_swl_test, label='Actual') #actual plot
+    axis[1].plot(test_dates, predicted_swl_test, label='Predicted') #predicted plot
+    axis[1].invert_yaxis()
+    axis[1].set_ylabel('Inverted SWL (m)')
+    axis[1].set_title(str(bore_id)+': Testing Set')
+    axis[1].legend()
+    
+    figure.tight_layout()
+
+    plt.savefig(predicted_data, format='pdf')
+    
+    predicted_data.close()
+    
+    return
+
+def calculate_test_metrics(y_test, actual_swl, predicted_swl):
+    test_len = len(y_test)
+    
+    actual_swl = actual_swl[-test_len:]
+    predicted_swl = predicted_swl[-test_len:]
+    
+    test_rmse = rmse(actual_swl, predicted_swl)
+    test_r_squared = calculate_r_squared(actual_swl, predicted_swl)
+    return test_rmse, test_r_squared
+
+def calculate_train_metrics(y_train, actual_swl, predicted_swl):
+    train_len = len(y_train)
+    
+    actual_swl = actual_swl[:train_len]
+    predicted_swl = predicted_swl[:train_len]
+    
+    train_rmse = rmse(actual_swl, predicted_swl)
+    train_r_squared = calculate_r_squared(actual_swl, predicted_swl)
+
+    return train_rmse, train_r_squared
+
+def get_model_paramters(lstm_model):
+    for name, param in lstm_model.named_parameters():
+        if param.requires_grad:
+            print(name, param.data)
+            print()
+    return
+
+def merge_pdfs(output_path, initial_path, predicted_path, date_time_file, bore_id):
+    log_name = 'output_log_'+date_time_file+'.pdf'
+    log_subfolder = 'Spreadsheet Data/' + str(bore_id) + '/logs/'
+    log_path = my_path(log_subfolder, log_name)
+    pdfs = [output_path, initial_path, predicted_path]
+    merger = PyPDF2.PdfMerger()
+    for pdf in pdfs:
+        merger.append(pdf)
+    merger.write(log_path)
+    merger.close()
+    return 
+
+def output_summary(bore_id, silo_variables, silo_latitude, silo_longitude, 
+                   gwl_dates, num_epochs, learning_rate, hidden_size, 
+                   num_layers, num_classes, train_split, history, y_train,
+                   y_test, actual_swl, predicted_swl, final_loss, input_size,
+                   t1, t2, silo_dates, lstm_model, swl, all_vars, test_dates,
+                   train_dates):
+
+    bore_subfolder = 'Spreadsheet Data/' + str(bore_id) + '/temp/'
+    
+    now = dt.datetime.now()
+    date_time_file = now.strftime("%Y_%m_%d__%H_%M_%S")
+    date_time_str = now.strftime("%d/%m/%Y - %H:%M:%S")
+    
+    input_variables = ['SWL (m)']
+    
+    for var in silo_variables:
+        if var == 'daily_rain':
+            input_variables.append('Rainfall (mm)')
+        elif var == 'max_temp':
+            input_variables.append('Maximum Temperature (°C)')
+        elif var == 'min_temp':
+            input_variables.append('Minimum Temperature (°C)')
+        elif var == 'vp':
+            input_variables.append('Vapour Pressure (hPa)')
+        elif var == 'vp_deficit':
+            input_variables.append('Vapour Pressure Deficit (hPa)')
+        elif var == 'evap_pan':
+            input_variables.append('Evaporation - Class A Pan (mm)')
+        elif var == 'evap_syn':
+            input_variables.append('Evaporation - Synthetic Estimate (mm)')
+        elif var == 'evap_comb':
+            input_variables.append('Evaporation - Combination (Synthetic Estimate pre-1970, Class A Pan 1970 Onwards) (mm)')
+        elif var == 'evap_morton_lake':
+            input_variables.append("Evaportation - Morton's Shallow Lake Evaporation (mm)")
+        elif var == 'radiation':
+            input_variables.append('Solar Radiation - Total Incoming Downward Shortwave Radiation on a Horizontal Surface (MJ/m^2)')
+        elif var == 'rh_tmax':
+            input_variables.append('Relative Humidity at Time of Maximum Temperature (%)')
+        elif var == 'rh_tmin':
+            input_variables.append('Relative Humidity at Time of Minimum Temperature (%)')
+        elif var == 'et_short_crop':
+            input_variables.append('Evapotranspiration - FAO56 Short Crop (mm)')
+        elif var == 'et_tall_crop':
+            input_variables.append('Evapotranspiration - ASCE Tall Crop (mm)')
+        elif var == 'et_morton_actual':
+            input_variables.append("Evapotranspiration - Morton's Areal Actual Evapotranspiration (mm)")
+        elif var == 'et_morton_potential':
+            input_variables.append("Evapotranspiration - Morton's Potential Evapotranspiration")
+        elif var == 'et_morton_wet':
+            input_variables.append("Evapotranspiration - Wet-Environment Areal Evapotranspiration Over Land (mm)")
+        elif var == 'mslp':
+            input_variables.append('Mean Sea Level Pressure (hPa)')
+    
+    start_date_year = str(gwl_dates[0])[:4]
+    start_date_month = str(gwl_dates[0])[5:7]
+    start_date_day = str(gwl_dates[0])[8:10]
+    start_date = start_date_day +  '/' + start_date_month + '/' + start_date_year
+    
+    end_date_year = str(gwl_dates[-1])[:4]
+    end_date_month = str(gwl_dates[-1])[5:7]
+    end_date_day = str(gwl_dates[-1])[8:10]
+    end_date = end_date_day +  '/' + end_date_month + '/' + end_date_year
+    
+    latitude, longitude = get_bore_data(bore_id)
+    test_rmse, test_r_squared = calculate_test_metrics(y_test, actual_swl, predicted_swl)
+    train_rmse, train_r_squared = calculate_train_metrics(y_train, actual_swl, predicted_swl)
+    
+ 
+    output_text = []
+    output_text.append('<><> Time Stamp <><>')
+    output_text.append('')
+    output_text.append(str(date_time_str))
+    output_text.append('')
+    output_text.append('<><> Data Summary <><>')
+    output_text.append('')
+    output_text.append('Bore ID: ' + str(bore_id))
+    output_text.append('Bore Coordinates: ' + '('+str(latitude) + ', ' + str(longitude)+')')
+    output_text.append('Silo Grid Point Coordinates: ' + '('+str(silo_latitude) + ', ' + str(silo_longitude)+')')
+    output_text.append('')
+    output_text.append('<><> Code Checks <><>')
+    output_text.append('')
+    output_text.append('GWL Date Chronological Order Check: ' + str(check_chronological(gwl_dates)))
+    output_text.append('SILO Date Chronoligical Order Check: ' + str(check_chronological(silo_dates)))
+    output_text.append('')
+    output_text.append('<><> Model Functionality <><>')
+    output_text.append('')
+    # output_text.append('Input Variables (Daily):' + ', '.join(input_variables))
+    output_text.append('Input Variables (Daily): ')
+    for iv in input_variables:
+        output_text.append('    '+str(iv))
+    output_text.append('Input Time Lags: Current day + ' + str(n_lags-1) + ' proceeding days')
+    output_text.append('Output: SWL (m) in ' + str(n_leads) + ' days time')
+    output_text.append('Data Range: ' + str(start_date) + ' - ' + str(end_date))
+    output_text.append('')
+    output_text.append('<><> Hyperparameters <><>')
+    output_text.append('')
+    output_text.append('Number of Epochs: ' + str(num_epochs))
+    output_text.append('Learning Rate: ' + str(learning_rate))
+    output_text.append('Number of Features in Hidden State: ' + str(hidden_size))
+    output_text.append('Number of Staked LSTM Layers: ' + str(num_layers))
+    output_text.append('Number of Output Classes: ' + str(num_classes))
+    output_text.append('Percentage of Data for Training: ' + str(train_split*100) + '%')
+    output_text.append('')
+    output_text.append('<><> Model Results <><>')
+    output_text.append('')
+    output_text.append('Run Time: ' + str(t2-t1)+'s')
+    output_text.append('Network Structure:')
+    flag = 0
+    new_line = '    '
+    for i in str(lstm_model):
+        if i == str('\n') and flag == 1:
+            flag += 1
+        if flag == 1:
+            new_line += i
+        if i == str('\n') and flag == 0:
+            flag = 1
+        if flag == 2:
+            output_text.append(new_line)
+            new_line = '    '
+            flag += -1
+    output_text.append('Final Training Loss: ' + str(final_loss))
+    output_text.append('Training Set RMSE: ' + str(train_rmse))
+    output_text.append('Training Set R^2: ' + str(train_r_squared))
+    output_text.append('Testing Set RMSE: ' + str(test_rmse))
+    output_text.append('Testing Set R^2: ' + str(test_r_squared))
+    for record in history:
+        output_text.append(str(record))
+    
+    pdf = fpdf.FPDF()
+    pdf.add_page()
+    pdf.set_font('Courier',size =9)
+    
+    for line in output_text:
+        pdf.cell(0,5,txt=line,ln=1,align='L')
+    
+    output_path = my_path(bore_subfolder,'output_summary.pdf')
+    pdf.output(output_path)
+    initial_path = my_path(bore_subfolder, 'input_graphs.pdf')
+    initial_data = PdfPages(initial_path)
+    
+    if input_size == 1:
+        figure, axis = plt.subplots(input_size, 1, figsize=(8.27, 11.69))
+        axis.plot(gwl_dates, swl)
+        axis.set_title(input_variables[0], fontsize=11)
+        figure.tight_layout()
+        plt.savefig(initial_data, format='pdf')
+    elif input_size <= 10:
+        figure, axis = plt.subplots(input_size, 1, figsize=(8.27, 11.69))
+        for i in range(input_size):
+            if i == 0:
+                axis[i].plot(gwl_dates, swl)
+                axis[i].set_title(input_variables[i], fontsize=11)
+            else:
+                axis[i].plot(silo_dates, all_vars[:, i-1])
+                axis[i].set_title(input_variables[i], fontsize=11)
+        figure.tight_layout()
+        plt.savefig(initial_data, format='pdf')
+    else:
+        num_per_page = int(np.ceil(input_size/2))
+        page_1 = num_per_page
+        figure, axis = plt.subplots(page_1, 1, figsize=(8.27, 11.69))
+        for i in range(num_per_page):
+            if i == 0:
+                axis[i].plot(gwl_dates, swl)
+                axis[i].set_title(input_variables[i], fontsize=11)
+            else:
+                axis[i].plot(silo_dates, all_vars[:, i-1])
+                axis[i].set_title(input_variables[i], fontsize=11)
+        figure.tight_layout()
+        plt.savefig(initial_data, format='pdf')
+        
+        page_2 = int(input_size - num_per_page)
+        figure, axis = plt.subplots(page_2, 1, figsize=(8.27, 11.69))
+        for i in range(num_per_page, input_size):
+            axis[i-num_per_page].plot(silo_dates, all_vars[:, i-1])
+            axis[i-num_per_page].set_title(input_variables[i], fontsize=11)
+        figure.tight_layout()
+        plt.savefig(initial_data, format='pdf')
+    initial_data.close()
+    
+    predicted_path = my_path(bore_subfolder, 'prediction_graphs.pdf')
+    prediction_plots(train_dates, test_dates, bore_id, actual_swl, predicted_swl, 
+                     date_time_file, predicted_path)
+    merge_pdfs(output_path, initial_path, predicted_path, date_time_file, bore_id)
+    return
+
+def run_single_bore(bore_id, silo_variables, n_lags, n_leads, num_epochs,
+                    learning_rate, hidden_size, num_layers, num_classes, train_split):
+    t1 = time.time()
+    
+
+    input_size = len(silo_variables) +1 #number of features (input vars) +1 = gwl
+    gwl_dates, swl = get_gwl_data(bore_id)
+    silo_dates, all_vars, silo_latitude, silo_longitude = get_silo_data(gwl_dates, bore_id, silo_variables)
+    
+    check_gwl = check_missing_days(gwl_dates)
+    check_silo = check_missing_days(silo_dates)
+    
+    scaler_X, scaler_Y, swl_scaled_train,swl_scaled_test, all_data_scaled_train, all_data_scaled_test = scale_data(swl, all_vars)
+    X_tensors_train, y_tensors_train = position_data(n_lags, n_leads, all_data_scaled_train,
+                                                     swl_scaled_train)
+    X_dates, y_dates = data_date_ref(gwl_dates, n_lags, n_leads) # lists identical to X_tensors, y_tensors but with dates for reference
+    X_train, X_test, y_train, y_test = train_test_sets(X_tensors_train,
+                                                       y_tensors_train,
+                                                       train_split)
+    lstm_model, history, final_loss = train_model(X_train, y_train, num_classes, input_size, 
+                                                  hidden_size, num_layers, n_lags, num_epochs, 
+                                                  learning_rate)
+    gwl_dates_used, silo_dates_used = used_dates(gwl_dates, silo_dates)
+    train_dates, test_dates = split_set(train_split, gwl_dates_used)
+    actual_swl, predicted_swl = make_predictions(X_test, n_lags, n_leads, all_data_scaled_test,
+                                                 swl_scaled_test, lstm_model,scaler_X, scaler_Y)
+    
+    # plot_all_data(train_dates, test_dates, bore_id, actual_swl, predicted_swl)
+    # plot_testing_only(test_dates, actual_swl, predicted_swl, bore_id)
+
+    t2 = time.time()
+    
+    output_summary(bore_id, silo_variables, silo_latitude, silo_longitude, 
+                   gwl_dates, num_epochs, learning_rate, hidden_size, num_layers, 
+                   num_classes, train_split, history, y_train, y_test, actual_swl, 
+                   predicted_swl, final_loss, input_size, t1, t2, silo_dates,
+                   lstm_model, swl, all_vars, test_dates, train_dates)
+
+    #### # KERAS TESTING
+    #### keras_lstm_model, keras_history, ev_loss, ev_rmse = train_keras_model(X_train, y_train, 100, learning_rate)
+    #### print(keras_lstm_model.summary())
+    #### X_test_keras = X_test.numpy()
+    #### y_hat_scaled = keras_lstm_model.predict(X_test_keras)
+    #### y_hat = scaler_Y.inverse_transform(y_hat_scaled)
+    
+    #### plt.cla()
+    #### plt.plot(actual_swl[-len(y_hat):], label='actual')
+    #### plt.plot(y_hat, label='Predicted')
+    #### plt.legend()
+    #### plt.show()
+    
+    #### train_score = model.evaluate(x_train, y_train, verbose=0)
+    #### print('Train loss: {}, Train accuracy: {}'.format(train_score[0], train_score[1]))
+    #### test_score = model.evaluate(x_test, y_test, verbose=0)
+    #### print('Test loss: {}, Test accuracy: {}'.format(test_score[0], test_score[1]))
+    
+    return lstm_model, X_train, X_test
+
+
+def run_multiple_bores(bore_ids, silo_variables, n_lags, n_leads, num_epochs,
+                       learning_rate, hidden_size, num_layers, num_classes, train_split):
+    tracker = 1
+    total = len(bore_ids)
+    for bore in bore_ids:
+        print(str(tracker) + '/' + str(total) + ': ' + str(bore))
+        print()
+        run_single_bore(bore, silo_variables, n_lags, n_leads, num_epochs,
+                        learning_rate, hidden_size, num_layers, num_classes, train_split)
+        tracker += 1
+        print()
+    return
+
+
+# %% Choose Borehole and Load
+
+# at time i, predict i + 1
+
+# silo_variables choices:'daily_rain', 'max_temp', 'min_temp', 'vp',
+#                        'vp_deficit', 'evap_pan', 'evap_syn', 'evap_comb', 
+#                        'evap_morton_lake', 'radiation', 'rh_tmax', 'rh_tmin',
+#                        'et_short_crop', 'et_tall_crop', 'et_morton_actual',
+#                        'et_morton_potential', 'et_morton_wet','mslp'
+
+# NEED TO BE ABLE TO CHECK DATES ARE SEQUENTIAL DAYS????
+
+
+
+n_lags = 30 # includes current time
+n_leads = 90 # days into future want to predict
+
+num_epochs = 1000 
+learning_rate = 0.001 
+
+hidden_size = 2 #number of features in hidden state
+num_layers = 1 #number of stacked lstm layers
+num_classes = 1 #number of output classes 
+train_split = 0.8
+
+
+bore_ids = ['GW036872.1.1', 'GW075025.1.1', 'GW075405.1.1', 'GW080079.1.1',
+            'GW080415.1.1', 'GW080980.1.1', 'GW081101.1.2', 'GW273314.1.1',
+            'GW403746.3.3']
+
+# bore_ids = ['GW075405.1.1', 'GW080079.1.1']
+
+silo_variables = ['daily_rain', 'max_temp', 'min_temp', 'vp', 'vp_deficit',
+                  'evap_pan', 'evap_syn', 'evap_comb', 'evap_morton_lake',
+                  'radiation', 'rh_tmax', 'rh_tmin', 'et_short_crop', 
+                  'et_tall_crop', 'et_morton_actual', 'et_morton_potential',
+                  'et_morton_wet','mslp']
+# silo_variables = []
+
+bore_id = 'GW403746.3.3'
+
+
+lstm_model, X_train, X_test = run_single_bore(bore_id, silo_variables, n_lags, n_leads, num_epochs, learning_rate, hidden_size, num_layers, num_classes, train_split)
+
+# run_multiple_bores(bore_ids, silo_variables, n_lags, n_leads, num_epochs, learning_rate, hidden_size, num_layers, num_classes, train_split)
+
+
+
+# %%
+
+
+# CURRENTLY BROKEN :( 
+import shap
+
+background = X_train
+e = shap.DeepExplainer(lstm_model, background)
+shap_values = e.shap_values(X_test)
+
+
+shap_vals = np.asarray(shap_values[0])
+shap_vals = shap_vals.reshape(-1, shap_vals.shape[-1])
+            
+s = shap_vals
+X = X_test.reshape(-1, X_test.shape[-1])
+
+# shap.summary_plot(s, X,feature_names=['P', 'T'], show=False)
+shap.summary_plot(s, X, show=False)
+
+plt.xlabel("SHAP value (impact on GWL)")
+plt.show()
+
+
+# def train_keras_model(X_train, y_train, num_epochs, learning_rate):
+
+#     keras_lstm_model = Sequential()
+    
+#     keras_lstm_model.add(LSTM(64, input_shape=(X_train.shape[1], X_train.shape[2]), 
+#                               activation='relu'))
+#     keras_lstm_model.add(Dense(8, activation='relu' ))
+#     keras_lstm_model.add(Dense(1, activation='linear'))
+#     keras_lstm_model.compile(loss='mse', optimizer=tf.keras.optimizers.Adam(learning_rate=learning_rate), 
+#                              metrics=[tf.keras.metrics.RootMeanSquaredError()])
+#                             # use loss = 'mae'    ???
+    
+#     keras_history = keras_lstm_model.fit(X_train, y_train, epochs=num_epochs, 
+#                                          validation_split=0.25, verbose=1, shuffle=False)
+
+#     ev_loss, ev_rmse = keras_lstm_model.evaluate(X_train, y_train, verbose=1)
+#     #history.history['loss'] #label='Train'
+#     #history.history['val_loss'] # label='Test'
+            
+#     return keras_lstm_model, keras_history, ev_loss, ev_rmse
+
+
+# 
+
+# figure, axis = plt.subplots(input_size, 1)
+
+# for i in range(input_size):
+#     if i == 0:
+#         axis[i,0].plot(gwl_dates, swl)
+#         axis[i,0].set_title(input_variables[i])
+#         axis[i,0].set_xlabel('Date')
+#     else:
+#         axis[i,0].plot(silo_dates, all_vars[:, i-1])
+#         axis[i,0].set_title(input_variables[i])
+#         axis[i,0].set_xlabel('Date')
+    
+# figure.tight_layout()
+
+
+# initial_data = PdfPages('Input Data.pdf')
+# plt.savefig(initial_data)
+# initial_data.close()
+
+
+
+
+
+
+
+
+
+
+
+
+
+# pdf_pages = PdfPages('neog.pdf') #OneDrive - UNSW/Thesis-John’s MacBook Pro 2020/Code Test/NSW.pdf') #Desktop/NSW.pdf') 
+# nugget, chicken =[1,2,3,4],[9,10,9,10] 
+# graph = plt.plot(nugget, chicken)
+# pdf_pages.savefig()
+# pdf_pages.close()
+
+
+# %%
+
+        
+# from PyPDF2 import PdfFileWriter, PdfFileReader
+# from reportlab.pdfgen import canvas
+# from reportlab.lib.pagesizes import letter
+
+
+# fig, (ax1, ax2) = plt.subplots(nrows=2, ncols=1)
+# matches1.plot(x='time', y='qty', legend=False, ax=ax1)
+# matches2.plot(x='time', y='size', legend=False, ax=ax2)
+# plt.tight_layout()
+# fig = plt.gcf()
+# fig.savefig('plot.pdf')
+
+# packet = io.BytesIO()
+# can = canvas.Canvas(packet, pagesize=letter)
+# y = 400
+# can.drawString(60, y, "Total 1: ")
+# can.drawString(60, y-15, "Total 2: ")
+# can.drawString(60, y-30, "Total 3: ")
+# can.drawString(60, y-45, "Total 4: ")
+# can.save()
+
+# packet.seek(0)
+# new_pdf = PdfFileReader(packet)
+# page = new_pdf.getPage(0)
+
+# output = PdfFileWriter()
+# output.addPage(page)
+# outputStream = open("text.pdf", "wb")
+# output.write(outputStream)
+# outputStream.close()
+
+# file1 = PdfFileReader(open("text.pdf", "rb"))
+# file2 = PdfFileReader(open("plot.pdf", "rb"))
+
+# page = file1.getPage(0)
+# page.mergePage(file2.getPage(0))
+
+# output = PdfFileWriter()
+# output.addPage(page)
+# outputStream = open("output.pdf", "wb")
+# output.write(outputStream)
+# outputStream.close()
+
+# %%
+# actual_swl, predicted_swl = make_predictions(X_test, n_lags, n_leads, 
+#                                              all_data_scaled_test,
+#                                              swl_scaled_test, lstm_model,
+#                                              scaler_X, scaler_Y)
+# train_dates, test_dates = split_set(train_split, gwl_dates_used)
+
+
+
+
+
+# sos = 200
+
+# test_dates = test_dates[:sos]
+# test_size = len(test_dates)
+# actual_swl = actual_swl[-test_size:]
+# actual_swl = actual_swl[:sos]
+# predicted_swl = predicted_swl[-test_size:]
+# predicted_swl = predicted_swl[:sos]
+
+
+# plt.figure(figsize=(10,6)) #plotting
+
+# plt.plot(test_dates[:sos], actual_swl, label='Actual Data') #actual plot
+# plt.plot(test_dates[:sos], predicted_swl, label='Predicted Data') #predicted plot
+
+# plt.title(bore_id)
+# plt.legend()
+# plt.show()
+
+
+# %%
+
+
+# import torchvision
+# import torchsummary
+
+
+# device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+# modelx = LSTM_nn(num_classes, input_size, hidden_size, num_layers, 
+#               n_lags).to(device)
+
+
+# # torchvision.models.vgg16().to(device)
+
+# torchsummary.summary(modelx, (1,input_size))
+
+
+# %%
+
+# X_tensors_train, y_tensors_train = position_data(n_lags, n_leads, 
+#                                                  all_data_scaled_train,
+#                                                  swl_scaled_train)
+ 
+
+
+
+
+# silo_dates = silo_dates.reshape(silo_dates.shape[0],1)
+# gwl_dates = gwl_dates.reshape(gwl_dates.shape[0],1)
+
+
+#input to network
+#      var 1   var 2
+# t1
+# t2
+# t3
+# t4
+
+
+
+
