@@ -300,7 +300,7 @@ class keras_LSTM():
         plt.figure()
         plt.plot(self.history.history['root_mean_squared_error'])
         plt.plot(self.history.history['val_root_mean_squared_error'])
-        plt.title('model accuracy')
+        plt.title('keras accuracy')
         plt.ylabel('root_mean_squared_error')
         plt.xlabel('epoch')
         plt.legend(['train', 'validation'], loc='upper left')
