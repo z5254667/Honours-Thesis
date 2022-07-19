@@ -125,7 +125,7 @@ class torch_LSTM(torch.nn.Module):
         epochs = his_array[:,0]+1
         epoch_loss = his_array[:,1]
         plt.figure()
-        plt.title('Loss')
+        plt.title('torch loss')
         plt.xlabel('epoch')
         plt.ylabel(self.loss_key)
         plt.plot(epochs, epoch_loss)
@@ -309,7 +309,7 @@ class keras_LSTM():
         plt.figure()
         plt.plot(self.history.history['loss'])
         plt.plot(self.history.history['val_loss'])
-        plt.title('model loss')
+        plt.title('keras loss')
         plt.ylabel('loss')
         plt.xlabel('epoch')
         plt.legend(['train', 'validation'], loc='upper left')
