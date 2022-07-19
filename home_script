@@ -116,7 +116,7 @@ model_parameters.add_metric_summary(keras_model.metric_summary())
 model_parameters.create_graph(current_bore)
 
 print(model_parameters.metric_dict)
-
+keras_model.plot_loss()
 
 ## Torch Model
 model_parameters.format_for_torch_LSTM()
@@ -132,6 +132,7 @@ model_parameters.add_train_prediction(torch_model.predict(model_parameters.X_tra
 model_parameters.create_graph(current_bore)
 
 print(training_preparation.my_mse(model_parameters.y_test, model_parameters.y_hat_test))
+torch_model.plot_loss()
 
 """
 TO DO
