@@ -1,0 +1,288 @@
+#!/usr/bin/env python3
+# -*- coding: utf-8 -*-
+"""
+Created on Sun Jul 17 15:30:48 2022
+
+@author: johnsalvaris
+"""
+# Script for LSTM Class
+
+# %% Torch
+import torch
+import numpy as np
+import matplotlib.pyplot as plt
+from torch.autograd import Variable
+
+
+class torch_LSTM(torch.nn.Module):
+    def __init__(self, optimiser='adam', loss='mse', metric='accuracy', epochs=200, validation_split=0.2, learning_rate=0.001, shuffle_order=False, verbose=0):
+        super(torch_LSTM, self).__init__()
+        self.opt_key = optimiser
+        self.loss_key = loss
+        # self.metric = metric
+        self.num_epochs = epochs
+        self.lr = learning_rate
+        self.verbose = verbose  # 0 for silent, 1 for progress
+        # self.validation_split = validation_split
+        # self.shuffle = shuffle_order
+        
+        """
+        Determine how to implement:
+            validation_split
+            shuffle_order
+            metric
+        """
+        
+        def RMSELoss(y_hat, y):
+            return torch.sqrt(torch.mean((y_hat - y)**2))
+        
+        self.loss_dict = {'mse': torch.nn.MSELoss(), 'mae': torch.nn.L1Loss(), 'rmse': RMSELoss}
+        self.opt_dict = {'adam': torch.optim.Adam}
+        
+        if self.loss_key not in list(self.loss_dict.keys()):
+            raise Exception("Non-default loss chosen, use: 'mse', 'mae' or 'rmse' instead.")
+            
+        if self.opt_key not in list(self.opt_dict.keys()):
+            raise Exception("Non-default loss chosen, use: 'adam' instead.")
+        
+        self.criterion = self.loss_dict[self.loss_key]
+        self.optimizer = self.opt_dict[self.opt_key]
+        
+        
+    def create_network(self, input_shape, num_outputs, num_fc_neurons, lstm_dropout_rate=0, stacked_lstm=1):
+        self.num_classes = num_outputs # number of output neurons 
+        self.num_layers = stacked_lstm # number of stacked lstm layers 
+        self.input_size = input_shape[-1] # (features) number of input features (variables) 
+        self.hidden_size = num_fc_neurons # number of output neurons from lstm (neurons in subsequent layer)
+        self.seq_length = input_shape[-2] # sequence length (number of lags)
+        self.dropout = lstm_dropout_rate
+        
+        """
+        Is a FC input layer needed first?
+        """
+        
+        # LSTM layer
+        self.lstm_layer = torch.nn.LSTM(input_size=self.input_size, hidden_size=self.hidden_size, num_layers=self.num_layers, dropout=self.dropout, batch_first=True)
+        # Fully Connected Hidden Layer
+        self.fc_hidden_layer =  torch.nn.Linear(self.hidden_size, self.hidden_size) #self.hidden_size) # Linear activation
+        # Fully Connected Output Layer
+        self.fc_output_layer =  torch.nn.Linear(self.hidden_size, self.num_classes) #(self.hidden_size # Linear activation
+
+    # def add_model(self, create_network_method):
+    #     # run create network method to add the model as an attribute of the class
+    #     self.model = create_network_method
+    
+    def forward(self, x):
+        h_0 = Variable(torch.zeros(self.num_layers, x.size(0), self.hidden_size)) # Initialise hidden state
+        c_0 = Variable(torch.zeros(self.num_layers, x.size(0), self.hidden_size)) # Initialise cell state
+        
+        # Propagate input through LSTM
+        lstm_out, (hn, cn) = self.lstm_layer(x, (h_0, c_0)) 
+        hn = hn.view(-1, self.hidden_size) # Reshape for fully connected layer
+        fc_hidden_out = self.fc_hidden_layer(hn)
+        fc_output_out = self.fc_output_layer(fc_hidden_out)
+        
+        return fc_output_out
+    
+    def train_model(self, X_train_tensor, y_train_tensor):    
+        self.X_train_tensor = X_train_tensor
+        self.y_train_tensor = y_train_tensor
+        self.optimizer = self.optimizer(self.parameters(), lr=self.lr) 
+
+        self.train() # Open model in training mode
+        self.history = []
+        
+        for epoch in range(self.num_epochs):
+            outputs = self.forward(self.X_train_tensor) 
+            self.optimizer.zero_grad() # Manually set gradient to 0
+         
+            self.loss = self.criterion(outputs, self.y_train_tensor)
+            self.loss.backward() # Calculate the loss of the loss function             
+            self.optimizer.step() # Backpropagation
+            
+            if self.verbose == 1:
+                if epoch % 100 == 0:
+                    self.history.append("Epoch: %d, Loss: %1.5f" % (epoch, self.loss.item()))
+                    print(str(np.round(epoch/self.num_epochs * 100, 0))+ "% trained")
+                elif epoch == self.num_epochs - 1:
+                    # history.append("Epoch: %d, loss: %1.5f" % (epoch, loss.item()))
+                    print("100% trained")
+                    
+            self.final_loss = self.loss.item()
+            
+    def predict(self, X_test_tensor, y_test_tensor):
+        self.X_tensor = X_test_tensor
+        self.y_tensor = y_test_tensor
+        
+        self.eval() # Open model in prediction mode
+        return self(self.X_tensor).data.numpy() # Return to input into model_parameters class methods 
+    
+
+        
+    """
+    OLD STUFF TO TRY IMPLEMENT?
+        
+    def prediction_plots(train_dates, test_dates, bore_id, actual_swl, predicted_swl, 
+                         date_time_file, predicted_path):
+        
+        predicted_data = PdfPages(predicted_path)
+        
+        all_dates = np.concatenate([train_dates, test_dates])
+        
+        test_size = len(test_dates)
+        actual_swl_test = actual_swl[-test_size:]
+        predicted_swl_test = predicted_swl[-test_size:]
+        
+        
+        figure, axis = plt.subplots(2, 1, figsize=(8.27, 11.69))
+    
+        axis[0].axvline(x=train_dates[-1], c='r', linestyle='--') #size of the training set
+        axis[0].plot(all_dates, actual_swl, label='Actual') 
+        axis[0].plot(all_dates, predicted_swl, label='Predicted')
+        axis[0].set_ylabel('SWL (m)')
+        axis[0].set_title(str(bore_id)+': Training and Testing Sets')
+        axis[0].legend()
+        
+        axis[1].plot(test_dates, actual_swl_test, label='Actual') #actual plot
+        axis[1].plot(test_dates, predicted_swl_test, label='Predicted') #predicted plot
+        axis[1].set_ylabel('SWL (m)')
+        axis[1].set_title(str(bore_id)+': Testing Set')
+        axis[1].legend()
+        
+        figure.tight_layout()
+    
+        plt.savefig(predicted_data, format='pdf')
+        
+        figure, axis = plt.subplots(2, 1, figsize=(8.27, 11.69))
+    
+        axis[0].axvline(x=train_dates[-1], c='r', linestyle='--') #size of the training set
+        axis[0].plot(all_dates, actual_swl, label='Actual') 
+        axis[0].plot(all_dates, predicted_swl, label='Predicted')
+        axis[0].invert_yaxis()
+        axis[0].set_ylabel('Inverted SWL (m)')
+        axis[0].set_title(str(bore_id)+': Training and Testing Sets')
+        axis[0].legend()
+        
+        axis[1].plot(test_dates, actual_swl_test, label='Actual') #actual plot
+        axis[1].plot(test_dates, predicted_swl_test, label='Predicted') #predicted plot
+        axis[1].invert_yaxis()
+        axis[1].set_ylabel('Inverted SWL (m)')
+        axis[1].set_title(str(bore_id)+': Testing Set')
+        axis[1].legend()
+        
+        figure.tight_layout()
+    
+        plt.savefig(predicted_data, format='pdf')
+        
+        predicted_data.close()
+        
+        return
+    
+    def calculate_test_metrics(y_test, actual_swl, predicted_swl):
+        test_len = len(y_test)
+        
+        actual_swl = actual_swl[-test_len:]
+        predicted_swl = predicted_swl[-test_len:]
+        
+        test_rmse = rmse(actual_swl, predicted_swl)
+        test_r_squared = calculate_r_squared(actual_swl, predicted_swl)
+        return test_rmse, test_r_squared
+    
+    def calculate_train_metrics(y_train, actual_swl, predicted_swl):
+        train_len = len(y_train)
+        
+        actual_swl = actual_swl[:train_len]
+        predicted_swl = predicted_swl[:train_len]
+        
+        train_rmse = rmse(actual_swl, predicted_swl)
+        train_r_squared = calculate_r_squared(actual_swl, predicted_swl)
+    
+        return train_rmse, train_r_squared
+    
+    def get_model_paramters(lstm_model):
+        for name, param in lstm_model.named_parameters():
+            if param.requires_grad:
+                print(name, param.data)
+                print()
+        return
+
+    """
+
+
+
+
+
+# %%
+
+# Keras version
+import tensorflow as tf
+
+from tensorflow.keras.models import Sequential
+from tensorflow.keras.layers import InputLayer
+from tensorflow.keras.layers import LSTM
+from tensorflow.keras.layers import Dense
+from tensorflow.keras.metrics import RootMeanSquaredError as RMSE
+
+
+class keras_LSTM():
+    def __init__(self, optimiser='adam', loss='mse', metric='accuracy', epochs=200, validation_split=0.2, shuffle_order=False, verbose=0):
+      
+        self.optimiser = optimiser 
+        self.loss = loss #mae, mse, rmse
+        self.metric = metric # = RMSE() AS AN INPUT --> MAKE THIS SO IT WORKS AS A LIST
+        
+        #used in train method
+        self.epochs = epochs
+        self.verbose = verbose
+        self.val_split = validation_split
+        self.shuffle_order = shuffle_order
+        
+        self.metric_keys = []
+        self.metric_values = []
+        
+    def create_network(self, input_shape, num_outputs=1, num_lstm_cells=64, num_fc_neurons=8, lstm_dropout_rate=0, lstm_recurrent_dropout_rate=0):
+        self.input_shape = input_shape[1:] # (lags, features)
+        self.num_outputs = num_outputs # number of outputs 
+        self.lstm_cells = num_lstm_cells
+        self.fc_neurons = num_fc_neurons
+        self.lstm_dropout = lstm_dropout_rate
+        self.lstm_recurrent_dropout = lstm_recurrent_dropout_rate
+
+        self.model = Sequential()
+        
+        # Input layer
+        self.model.add(InputLayer(input_shape=self.input_shape)) 
+        
+        """
+        Add a FC first?? --> num nodes = lags * features? --> Linear activation
+        """
+        
+        #LSTM Layer
+        self.model.add(LSTM(self.lstm_cells, dropout=self.lstm_dropout, recurrent_dropout=self.lstm_recurrent_dropout))
+        #Fully Connected Hidden Layer
+        self.model.add(Dense(self.fc_neurons)) # Linear Activation
+        #Fully Connected Output Layer
+        self.model.add(Dense(self.num_outputs)) #linear Activtion
+        
+        #compile
+        self.model.compile(optimizer=self.optimiser, loss=self.loss, metrics=[self.metric])
+    
+    def train_model(self, X, y):        
+        self.history = self.model.fit(X, y, epochs=self.epochs, verbose=self.verbose, validation_split=self.val_split, shuffle=self.shuffle_order)
+        self.train_loss, self.train_metric = self.model.evaluate(X, y, verbose=self.verbose)
+    
+    def predict(self, X, y, data_set='test'):
+        self.metric_keys.extend(list(map(lambda x: data_set + '_' + x, self.model.metrics_names)))
+        self.metric_values.extend(self.model.evaluate(X, y, verbose=self.verbose))
+        
+        return self.model.predict(X, verbose=self.verbose) # Return to input into model_parameters class methods 
+        
+    def metric_summary(self):
+        self.metric_dict = dict(zip(self.metric_keys, self.metric_values))
+        return self.metric_dict
+                                
+        """
+        function in model_parameters to make y_train in single line
+        """
+    
+
