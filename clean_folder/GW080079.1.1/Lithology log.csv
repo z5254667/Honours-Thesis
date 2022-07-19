@@ -1,0 +1,6 @@
+"Bore ID","Depth From (m)","Depth To (m)","Top Elevation (m AHD)","Bottom Elevation (m AHD)","Major Lithology","Minor Lithology","Description","Source"
+"GW080079.1.1",0.4,7.0,2.246,-4.354,"SAND","NA","Sand - grey","UNK"
+"GW080079.1.1",0.0,0.4,2.646,2.246,"TPSL","NA","Top soil","UNK"
+"GW080079.1.1",7.5,8.4,-4.854,-5.754,"SAND","NA","Sand","UNK"
+"GW080079.1.1",7.0,7.5,-4.354,-4.854,"ROCK","NA","Rock - coffee","UNK"
+"GW080079.1.1",8.4,8.57,-5.754,-5.924,"ROCK","NA","Rock","UNK"

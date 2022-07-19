@@ -1,0 +1,5 @@
+"Bore ID","Depth From (m)","Depth To (m)","Top Elevation (m AHD)","Bottom Elevation (m AHD)","Constructiontype","Material","Inner Diameter","Outer Diameter","Property","Property Size","Drill Method"
+"GW080980.1.1",0.0,0.4,124.861,124.461,"UNK","UNK",,500.0,"UNK",,"UNK"
+"GW080980.1.1",0.0,24.0,124.861,100.861,"LIN","UNK",100.0,110.0,"UNK",,"UNK"
+"GW080980.1.1",0.0,0.1,124.861,124.761,"LIN","UNK",160.0,180.0,"UNK",,"UNK"
+"GW080980.1.1",14.0,20.0,110.861,104.861,"INLT","UNK",,110.0,"UNK",,"UNK"

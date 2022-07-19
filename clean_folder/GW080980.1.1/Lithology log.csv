@@ -1,0 +1,4 @@
+"Bore ID","Depth From (m)","Depth To (m)","Top Elevation (m AHD)","Bottom Elevation (m AHD)","Major Lithology","Minor Lithology","Description","Source"
+"GW080980.1.1",0.0,0.1,124.861,124.761,"TPSL","NA","Topsoil","UNK"
+"GW080980.1.1",0.1,2.0,124.761,122.861,"CLAY","NA","Clay","UNK"
+"GW080980.1.1",2.0,24.0,122.861,100.861,"PRLS","NA","Pyroclastics, grey tuff","UNK"
