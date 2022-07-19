@@ -1,0 +1,34 @@
+#!/usr/bin/env python3
+# -*- coding: utf-8 -*-
+"""
+Created on Sun Jul 17 20:07:50 2022
+
+@author: johnsalvaris
+"""
+
+# Prepare the data for training
+
+import numpy as np
+
+from sklearn.model_selection import train_test_split
+
+# format
+# train_test_split
+
+def my_rmse(real, pred):
+    return np.sqrt(np.sum((real - pred)**2)/real.shape[0])
+
+def my_mse(real, pred):
+    return np.sum((real - pred)**2)/real.shape[0]
+
+# r^2
+def my_determ_coef(real, pred):
+    rss = np.sum((real-pred)**2)
+    avg = np.mean(real)
+    tss = np.sum((real-avg)**2)
+    return 1 - rss/tss
+
+# unsure about the real difference
+def my_nash(real, pred):
+    pass
+
