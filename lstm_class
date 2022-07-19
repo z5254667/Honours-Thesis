@@ -91,6 +91,7 @@ class torch_LSTM(torch.nn.Module):
 
         self.train() # Open model in training mode
         self.history = []
+        self.print_history = []
         
         for epoch in range(self.num_epochs):
             outputs = self.forward(self.X_train_tensor) 
@@ -100,9 +101,11 @@ class torch_LSTM(torch.nn.Module):
             self.loss.backward() # Calculate the loss of the loss function             
             self.optimizer.step() # Backpropagation
             
+            self.history.append((epoch, self.loss.item()))
+            
             if self.verbose == 1:
                 if epoch % 100 == 0:
-                    self.history.append("Epoch: %d, Loss: %1.5f" % (epoch, self.loss.item()))
+                    self.print_history.append("Epoch: %d, Loss: %1.5f" % (epoch, self.loss.item()))
                     print(str(np.round(epoch/self.num_epochs * 100, 0))+ "% trained")
                 elif epoch == self.num_epochs - 1:
                     # history.append("Epoch: %d, loss: %1.5f" % (epoch, loss.item()))
@@ -117,6 +120,17 @@ class torch_LSTM(torch.nn.Module):
         self.eval() # Open model in prediction mode
         return self(self.X_tensor).data.numpy() # Return to input into model_parameters class methods 
     
+    def plot_loss(self):
+        his_array = np.array(self.history)
+        epochs = his_array[:,0]+1
+        epoch_loss = his_array[:,1]
+        plt.figure()
+        plt.title('Loss')
+        plt.xlabel('epoch')
+        plt.ylabel(self.loss_key)
+        plt.plot(epochs, epoch_loss)
+        plt.tight_layout()
+        plt.show()
 
         
     """
@@ -280,7 +294,27 @@ class keras_LSTM():
     def metric_summary(self):
         self.metric_dict = dict(zip(self.metric_keys, self.metric_values))
         return self.metric_dict
-                                
+    
+    
+    def plot_loss(self):
+        plt.figure()
+        plt.plot(self.history.history['root_mean_squared_error'])
+        plt.plot(self.history.history['val_root_mean_squared_error'])
+        plt.title('model accuracy')
+        plt.ylabel('root_mean_squared_error')
+        plt.xlabel('epoch')
+        plt.legend(['train', 'validation'], loc='upper left')
+        plt.show()
+        
+        plt.figure()
+        plt.plot(self.history.history['loss'])
+        plt.plot(self.history.history['val_loss'])
+        plt.title('model loss')
+        plt.ylabel('loss')
+        plt.xlabel('epoch')
+        plt.legend(['train', 'validation'], loc='upper left')
+        plt.show()
+        
         """
         function in model_parameters to make y_train in single line
         """
