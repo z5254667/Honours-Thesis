@@ -113,7 +113,7 @@ model_parameters.add_train_prediction(keras_model.predict(model_parameters.X_tra
 
 model_parameters.add_metric_summary(keras_model.metric_summary())
 
-model_parameters.create_graph(current_bore)
+model_parameters.create_graph(current_bore, package='keras')
 
 print(model_parameters.metric_dict)
 keras_model.plot_loss()
@@ -129,7 +129,7 @@ torch_model.train_model(model_parameters.X_train_tensor, model_parameters.y_trai
 model_parameters.add_test_prediction(torch_model.predict(model_parameters.X_test_tensor, model_parameters.y_test_tensor))
 model_parameters.add_train_prediction(torch_model.predict(model_parameters.X_train_tensor, model_parameters.y_train_tensor))
 
-model_parameters.create_graph(current_bore)
+model_parameters.create_graph(current_bore, package='torch')
 
 print(training_preparation.my_mse(model_parameters.y_test, model_parameters.y_hat_test))
 torch_model.plot_loss()
