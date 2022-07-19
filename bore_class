@@ -182,7 +182,7 @@ class model_parameters(bore):
         self.metric_dict = metric_dict
 
 
-    def create_graph(self, bore): # Move to Bore class?
+    def create_graph(self, bore, package='keras'): # Move to Bore class?
         if self.times_out > 1:
             # real_y_test --> SINGLE LINE
             np.concatenate(self.y_test[:,0],self.y_test[-1,-1])
@@ -196,7 +196,7 @@ class model_parameters(bore):
         self.unscaled_y_hat_test = self.output_scaler.inverse_transform(self.y_hat_test)
         
         #TITLE 
-        title = bore.id + ' - Keras LSTM (Full Set)'
+        title = bore.id + ' - ' + package + ' LSTM (Full Set)'
         # Include loss + metrics
         
         plt.figure()
@@ -214,7 +214,7 @@ class model_parameters(bore):
         
         plt.figure()
         
-        title = bore.id + ' - Keras LSTM (Test Set)'
+        title = bore.id + ' - ' + package + ' LSTM (Test Set)'
         
         plt.plot(self.test_dates, self.unscaled_y_hat_test, label='Test Predictions')
         plt.plot(self.test_dates, self.unscaled_y_test, label='Test Actuals')
