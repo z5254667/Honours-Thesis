@@ -1,0 +1,185 @@
+#!/usr/bin/env python3
+# -*- coding: utf-8 -*-
+"""
+Created on Sun Jul 17 17:24:09 2022
+
+@author: johnsalvaris
+"""
+
+# main file
+
+import import_data
+import bore_class
+import training_preparation
+import lstm_class
+
+import numpy as np
+import pandas as pd
+
+# input selection
+use_gwl_as_input = False
+
+silo_variables = ['daily_rain', 'max_temp', 'min_temp', 'vp', 'vp_deficit',
+                  'evap_pan', 'evap_syn', 'evap_comb', 'evap_morton_lake',
+                  'radiation', 'rh_tmax', 'rh_tmin', 'et_short_crop', 
+                  'et_tall_crop', 'et_morton_actual', 'et_morton_potential',
+                  'et_morton_wet','mslp']
+silo_variables = ['max_temp', 'daily_rain', 'evap_pan']
+
+
+# prediction parameters
+times_in = 30 # time lags
+times_out = 1 # multiple outputs?
+out_after = 30 # time leads
+between_outs = 1 # space between mutliple outputs
+
+# chosen bore
+bore_id = 'GW403746.3.3' #'GW036872.1.1', 'GW075025.1.1', 'GW075405.1.1', 'GW080079.1.1' 'GW080415.1.1', 'GW080980.1.1', 'GW081101.1.2', 'GW273314.1.1', 'GW403746.3.3'
+
+#store raw data about the bore
+current_bore = bore_class.bore(bore_id) #better name than current bore!!!!!!
+
+#class for things used by the model
+model_parameters = bore_class.model_parameters(silo_variables, use_gwl_as_input)
+model_parameters.add_in_out_params(times_in, out_after, times_out, between_outs)
+
+
+#import data
+bore_df = import_data.get_bore_df(bore_id)
+gwl_df = import_data.get_gwl_df(bore_id)
+silo_df = import_data.get_silo_df(bore_id)
+
+#define the bore + silo coordinates
+current_bore.add_location(bore_df, silo_df) 
+
+#remove unused dates from the imported data
+gwl_df, silo_df = import_data.remove_null_dates(gwl_df, silo_df)
+
+"""
+NEED TO HANDLE MISSING DAYS --> possibly add back in dates
+"""
+
+# add reference (unscaled) bore data to bore for reference 
+current_bore.add_silo_data(silo_df)
+current_bore.add_gwl_data(gwl_df)
+
+
+# format data for training
+scaler_type = 'mm' # = 'ss' ### ADD THIS AS A SLECTION FOR THE MODEL
+
+model_parameters.add_data(gwl_df, silo_df)
+model_parameters.scale_data(scaler_type)
+
+model_parameters.format_inputs_outputs()
+
+test_size = 0.2
+shuffle_order = False
+
+model_parameters.divide_data(test_size, shuffle_order)
+
+# formatted_inputs = training_preparation.format_inputs(model_parameters.scaled_input, times_in, times_out, out_after, between_outs)
+# formatted_outputs = training_preparation.format_outputs(model_parameters.scaled_output, times_in, times_out, out_after, between_outs)
+
+
+# formatted_inputs = model_parameters.formatted_inputs
+# formatted_outputs = model_parameters.formatted_outputs
+
+from tensorflow.keras.metrics import RootMeanSquaredError as RMSE
+optimiser ='adam'
+loss ='mse'
+metric = RMSE() #'accuracy'
+epochs = 100 # 200
+validation_split = 0.2
+verbose = 0
+learning_rate = 0.001 
+
+input_shape = model_parameters.X_train.shape
+num_outputs = model_parameters.times_out
+num_lstm_cells = times_in * len(model_parameters.input_variables) #64
+num_fc_neurons = 8
+lstm_dropout_rate = 0.2
+lstm_recurrent_dropout_rate = 0.2
+stacked_lstm = 1
+
+
+## Keras Model
+keras_model = lstm_class.keras_LSTM(optimiser=optimiser, loss=loss, metric=metric, epochs=epochs, validation_split=validation_split, verbose=verbose)
+keras_model.create_network(input_shape, num_outputs, num_lstm_cells, num_fc_neurons, lstm_dropout_rate)
+keras_model.train_model(model_parameters.X_train, model_parameters.y_train)
+
+""" Move which class these go to --> want only one function"""
+model_parameters.add_test_prediction(keras_model.predict(model_parameters.X_test, model_parameters.y_test, data_set='test'))
+model_parameters.add_train_prediction(keras_model.predict(model_parameters.X_train, model_parameters.y_train, data_set='train'))
+
+model_parameters.add_metric_summary(keras_model.metric_summary())
+
+model_parameters.create_graph(current_bore)
+
+print(model_parameters.metric_dict)
+
+
+## Torch Model
+model_parameters.format_for_torch_LSTM()
+torch_model = lstm_class.torch_LSTM(optimiser=optimiser, loss=loss, epochs=epochs, learning_rate=learning_rate, verbose=verbose)
+torch_model.create_network(input_shape, num_outputs, num_fc_neurons)
+torch_model.train_model(model_parameters.X_train_tensor, model_parameters.y_train_tensor)
+
+
+""" Move which class these go to --> want only one function"""
+model_parameters.add_test_prediction(torch_model.predict(model_parameters.X_test_tensor, model_parameters.y_test_tensor))
+model_parameters.add_train_prediction(torch_model.predict(model_parameters.X_train_tensor, model_parameters.y_train_tensor))
+
+model_parameters.create_graph(current_bore)
+
+print(training_preparation.my_mse(model_parameters.y_test, model_parameters.y_hat_test))
+
+"""
+TO DO
+
+add to run for all
+keras --> check mutliple test metrics
+torch --> metric functions (move from 'training_preparation.py')
+separate class storage for torch and keras predictions
+create + integrate SVR script
+recreate script to make output log
+separate bore + model parameter classes into separate scripts
+separate kereas + torch into separate scripts
+
+
+test multiple leads --> do after next submission
+
+address all the other green triple " comments still remaining
+"""
+
+
+
+"""
+
+old stuff
+n_lags = 30 # includes current time
+n_leads = 90 # days into future want to predict
+
+num_epochs = 1000 
+learning_rate = 0.001 
+
+hidden_size = 2 #number of features in hidden state
+num_layers = 1 #number of stacked lstm layers
+num_classes = 1 #number of output classes 
+train_split = 0.8
+
+
+bore_ids = ['GW036872.1.1', 'GW075025.1.1', 'GW075405.1.1', 'GW080079.1.1',
+            'GW080415.1.1', 'GW080980.1.1', 'GW081101.1.2', 'GW273314.1.1',
+            'GW403746.3.3']
+
+# bore_ids = ['GW075405.1.1', 'GW080079.1.1']
+
+silo_variables = ['daily_rain', 'max_temp', 'min_temp', 'vp', 'vp_deficit',
+                  'evap_pan', 'evap_syn', 'evap_comb', 'evap_morton_lake',
+                  'radiation', 'rh_tmax', 'rh_tmin', 'et_short_crop', 
+                  'et_tall_crop', 'et_morton_actual', 'et_morton_potential',
+                  'et_morton_wet','mslp']
+# silo_variables = []
+
+bore_id = 'GW403746.3.3'
+"""
